@@ -18,35 +18,24 @@
 
 #pragma once
 
-#include <atomic>
-#include <shared_mutex>
+#include <memory>
 
 namespace lczero {
 
-// Implementation of reader-preferenced shared mutex. Based on fair shared
-// mutex.
-class rp_shared_mutex {
+// Non resizeable array which can contain up to 255 elements.
+template <typename T>
+class SmallArray {
  public:
-  void lock() {
-    while (true) {
-      mutex_.lock();
-      if (waiting_readers_ == 0) return;
-      mutex_.unlock();
-    }
-  }
-  void unlock() { mutex_.unlock(); }
-  void lock_shared() {
-    ++waiting_readers_;
-    mutex_.lock_shared();
-  }
-  void unlock_shared() {
-    --waiting_readers_;
-    mutex_.unlock_shared();
-  }
+  SmallArray() = delete;
+  SmallArray(size_t size) : size_(size), data_(std::make_unique<T[]>(size)) {}
+  SmallArray(SmallArray&&);  // TODO implement when needed
+  T& operator[](int idx) { return data_[idx]; }
+  const T& operator[](int idx) const { return data_[idx]; }
+  int size() const { return size_; }
 
  private:
-  std::shared_mutex mutex_;
-  std::atomic<int> waiting_readers_ = 0;
+  unsigned char size_;
+  std::unique_ptr<T[]> data_;
 };
 
 }  // namespace lczero

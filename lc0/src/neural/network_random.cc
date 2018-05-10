@@ -15,16 +15,18 @@
   You should have received a copy of the GNU General Public License
   along with Leela Chess.  If not, see <http://www.gnu.org/licenses/>.
 */
-#include "neural/network_random.h"
 
+#include <chrono>
 #include <functional>
+#include <thread>
+#include "neural/factory.h"
 #include "utils/hashcat.h"
 
 namespace lczero {
 
 class RandomNetworkComputation : public NetworkComputation {
  public:
-  RandomNetworkComputation() {}
+  RandomNetworkComputation(int delay) : delay_ms_(delay) {}
   void AddInput(InputPlanes&& input) override {
     std::uint64_t hash = 0;
     for (const auto& plane : input) {
@@ -32,7 +34,11 @@ class RandomNetworkComputation : public NetworkComputation {
     }
     inputs_.push_back(hash);
   }
-  void ComputeBlocking() override { return; }
+  void ComputeBlocking() override {
+    if (delay_ms_) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms_));
+    }
+  }
 
   int GetBatchSize() const override { return inputs_.size(); }
   float GetQVal(int sample) const override {
@@ -46,17 +52,21 @@ class RandomNetworkComputation : public NetworkComputation {
 
  private:
   std::vector<std::uint64_t> inputs_;
+  int delay_ms_ = 0;
 };
 
 class RandomNetwork : public Network {
  public:
-  std::unique_ptr<NetworkComputation> NewComputation() const override {
-    return std::make_unique<RandomNetworkComputation>();
+  RandomNetwork(const Weights& weights, const OptionsDict& options)
+      : delay_ms_(options.GetOrDefault<int>("delay", 0)) {}
+  std::unique_ptr<NetworkComputation> NewComputation() override {
+    return std::make_unique<RandomNetworkComputation>(delay_ms_);
   }
+
+ private:
+  int delay_ms_ = 0;
 };
 
-std::unique_ptr<Network> MakeRandomNetwork() {
-  return std::make_unique<RandomNetwork>();
-}
+REGISTER_NETWORK("random", RandomNetwork, -900);
 
 }  // namespace lczero

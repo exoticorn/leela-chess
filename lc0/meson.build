@@ -1,7 +1,6 @@
-project('lc0', 'cpp')
-  #        default_options : ['cpp_std=c++17'])
+project('lc0', 'cpp', default_options : ['cpp_std=c++14'])
 
-add_global_arguments('-std=c++17', language : 'cpp')
+add_global_arguments('-Wthread-safety', language : 'cpp')
 cc = meson.get_compiler('cpp')
 
 # Installed from https://github.com/FloopCZ/tensorflow_cc
@@ -26,21 +25,47 @@ tensorflow_cc = declare_dependency(
 deps = []
 deps += tensorflow_cc
 deps += cc.find_library('stdc++fs')
-# deps += dependency('libprofiler')
+deps += cc.find_library('pthread')
+deps += cc.find_library('libcublas', dirs: ['/opt/cuda/lib64/', '/usr/local/cuda/lib64/'])
+deps += cc.find_library('libcudnn', dirs: ['/opt/cuda/lib64/', '/usr/local/cuda/lib64/'])
+deps += cc.find_library('libcudart', dirs: ['/opt/cuda/lib64/', '/usr/local/cuda/lib64/'])
+# deps += cc.find_library('libprofiler', dirs: ['/usr/local/lib'])
+
+nvcc = find_program('nvcc')
+cuda_files = [
+  'src/neural/network_cudnn.cu',
+]
+
+cuda_gen = generator(nvcc,
+    output: '@BASENAME@.o',
+    arguments: ['--std=c++14', '-c', '@INPUT@', '-o', '@OUTPUT@', '-I', '../src'],
+)
 
 files = [
   'src/chess/bitboard.cc',
   'src/chess/board.cc',
-  'src/neural/loader.cc',
-  'src/neural/network_tf.cc',
-  'src/neural/network_random.cc',
-  'src/neural/cache.cc',
-  'src/mcts/search.cc',
+  'src/chess/position.cc',
   'src/mcts/node.cc',
-  'src/engine.cc',
-  'src/uciloop.cc',
-  'src/ucioptions.cc',
+  'src/mcts/search.cc',
+  'src/neural/cache.cc',
+  'src/neural/encoder.cc',
+  'src/neural/factory.cc',
+  'src/neural/loader.cc',
+  'src/neural/writer.cc',
+  'src/neural/network_mux.cc',
+  'src/neural/network_random.cc',
+  'src/neural/network_tf.cc',
   'src/utils/transpose.cc',
+  'src/utils/commandline.cc',
+  'src/utils/optionsdict.cc',
+  'src/utils/random.cc',
+  'src/engine.cc',
+  'src/optionsparser.cc',
+  'src/selfplay/game.cc',
+  'src/selfplay/tournament.cc',
+  'src/selfplay/loop.cc',
+  'src/uciloop.cc',
+  cuda_gen.process(cuda_files)
 ]
 
 includes = []
@@ -57,11 +82,6 @@ test_deps += dependency('gtest')
 
 test('ChessBoard',
   executable('chessboard_test', 'src/chess/board_test.cc',
-  files, include_directories: includes, dependencies: test_deps
-))
-
-test('Network',
-  executable('network_test', 'src/neural/network_test.cc',
   files, include_directories: includes, dependencies: test_deps
 ))
 

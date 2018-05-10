@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/marcsauter/single"
 )
 
 func addFile(tw *tar.Writer, path string) error {
@@ -42,15 +44,13 @@ func addFile(tw *tar.Writer, path string) error {
 }
 
 func tarGame(game *db.TrainingGame, dir string, tw *tar.Writer) error {
-	if !strings.HasSuffix(game.Path, ".gz") {
-		log.Fatal("Not reading gz file?")
-	}
+	name := fmt.Sprintf("training.%d.gz", game.ID)
+	source := "../../games/run1/" + name
 
-	path := filepath.Base(game.Path)
-	path = filepath.Join(dir, path[0:len(path)-3])
-	// log.Printf("Compressing %s to %s\n", game.Path, path)
+	path := filepath.Join(dir, name[0:len(name)-3])
+	// log.Printf("Compressing %s to %s\n", source, path)
 
-	gzFile, err := os.Open("../../" + game.Path)
+	gzFile, err := os.Open(source)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func compactGames() bool {
 	// Query for all the active games we haven't yet compacted.
 	games := []db.TrainingGame{}
 	var numGames int64 = 10000
-	err := db.GetDB().Order("id asc").Limit(numGames).Where("compacted = false AND id >= 40000").Find(&games).Error
+	err := db.GetDB().Order("id asc nulls first").Limit(numGames).Where("compacted = false").Find(&games).Error
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -200,6 +200,15 @@ func compactGames() bool {
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
+	s := single.New("compact_games")
+	if err := s.CheckLock(); err != nil && err == single.ErrAlreadyRunning {
+		log.Fatal("another instance of the app is already running, exiting")
+	} else if err != nil {
+		// Another error occurred, might be worth handling it as well
+		log.Fatalf("failed to acquire exclusive app lock: %v", err)
+	}
+	defer s.TryUnlock()
 
 	db.Init(true)
 	defer db.Close()

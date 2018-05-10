@@ -39,6 +39,7 @@
 #include "Training.h"
 #include "Types.h"
 #include "TimeMan.h"
+#include "syzygy/tbprobe.h"
 #ifdef USE_OPENCL
 #include "OpenCL.h"
 #endif
@@ -50,7 +51,7 @@ LimitsType Limits;
 UCTSearch::UCTSearch(BoardHistory&& bh)
     : bh_(std::move(bh)) {
     set_playout_limit(cfg_max_playouts);
-    set_visit_limit(cfg_max_visits);
+    set_node_limit(cfg_max_nodes);
     m_root = std::make_unique<UCTNode>(MOVE_NONE, 0.0f, 0.5f);
 }
 
@@ -58,13 +59,16 @@ void UCTSearch::set_quiet(bool quiet) {
     quiet_ = quiet;
 }
 
-SearchResult UCTSearch::play_simulation(BoardHistory& bh, UCTNode* const node) {
+SearchResult UCTSearch::play_simulation(BoardHistory& bh, UCTNode* const node, int ndepth) {
     const auto& cur = bh.cur();
     const auto color = cur.side_to_move();
 
     auto result = SearchResult{};
 
     node->virtual_loss();
+    if (ndepth > m_maxdepth) {
+        m_maxdepth = ndepth;
+    }
 
     if (!node->has_children()) {
         bool drawn = cur.is_draw();
@@ -72,10 +76,29 @@ SearchResult UCTSearch::play_simulation(BoardHistory& bh, UCTNode* const node) {
             float score = (drawn || !cur.checkers()) ? 0.0 : (color == Color::WHITE ? -1.0 : 1.0);
             result = SearchResult::from_score(score);
         } else if (m_nodes < MAX_TREE_SIZE) {
-            float eval;
-            auto success = node->create_children(m_nodes, bh, eval);
-            if (success) {
-                result = SearchResult::from_eval(eval);
+            Tablebases::ProbeState err = Tablebases::ProbeState::FAIL;
+            if (cur.rule50_count() == 0 && cur.count<ALL_PIECES>() <= Tablebases::MaxCardinality && !cur.can_castle(ANY_CASTLING)) {
+                Position to_lookup = cur;
+                Tablebases::WDLScore wdl = Tablebases::probe_wdl(to_lookup, &err);
+                if (err != Tablebases::ProbeState::FAIL) {
+                    if (wdl == Tablebases::WDLLoss) {
+                        result = SearchResult::from_score(color == Color::WHITE ? -1.0 : 1.0);
+                    } else if (wdl == Tablebases::WDLWin) {
+                        result = SearchResult::from_score(color == Color::WHITE ? 1.0 : -1.0);
+                    } else if (cfg_syzygydraw) {
+                        result = SearchResult::from_score(0.0);
+                    } else {
+                        err = Tablebases::ProbeState::FAIL;
+                    }
+                    ++m_tbhits;
+                }
+            }
+            if (err == Tablebases::ProbeState::FAIL) {
+                float eval;
+                auto success = node->create_children(m_nodes, bh, eval);
+                if (success) {
+                    result = SearchResult::from_eval(eval);
+                }
             }
         }
     }
@@ -84,7 +107,7 @@ SearchResult UCTSearch::play_simulation(BoardHistory& bh, UCTNode* const node) {
         auto next = node->uct_select_child(color, node == m_root.get());
         auto move = next->get_move();
         bh.do_move(move);
-        result = play_simulation(bh, next);
+        result = play_simulation(bh, next, ndepth+1);
     }
 
     if (result.valid()) {
@@ -110,27 +133,21 @@ void UCTSearch::dump_stats(BoardHistory& state, UCTNode& parent) {
         return;
     }
 
-    auto root_temperature = 1.0f;
-    auto normfactor = float(m_root->get_first_child()->get_visits());
-    auto accum = 0.0f;
-    if (cfg_randomize) {
-        if (cfg_root_temp_decay > 0) {
-            root_temperature = get_root_temperature();
-        }
-        for (const auto& node : boost::adaptors::reverse(parent.get_children())) {
-            accum += std::pow(node->get_visits()/normfactor,1/root_temperature);
-        }
-    }
+    auto root_temperature = get_root_temperature();
+    auto accum_vector = m_root->calc_proportional(root_temperature, color);
 
-    // Reverse sort because GUIs typically will reverse it again.
     for (const auto& node : boost::adaptors::reverse(parent.get_children())) {
         std::string tmp = state.cur().move_to_san(node->get_move());
         std::string pvstring(tmp);
         std::string moveprob(10, '\0');
 
-        auto move_probability = 0.0f;
         if (cfg_randomize) {
-            move_probability = std::pow(node->get_visits()/normfactor,1/root_temperature)/accum*100.0f;
+            auto move_probability = accum_vector.back();
+            accum_vector.pop_back();
+            if (accum_vector.size() > 0) {
+                move_probability -= accum_vector.back();
+            }
+            move_probability *= 100.0f; // The following code expects percentage.
             if (move_probability > 0.01f) {
                 std::snprintf(&moveprob[0], moveprob.size(), "(%6.2f%%)", move_probability);
             } else if (move_probability > 0.00001f) {
@@ -157,10 +174,17 @@ void UCTSearch::dump_stats(BoardHistory& state, UCTNode& parent) {
 
         myprintf_so("%s\n", pvstring.c_str());
     }
+    // winrate separate info string since it's not UCI spec
+    float feval = m_root->get_eval(color);
+    myprintf_so("info string stm %s winrate %5.2f%%\n",
+        color == Color::WHITE ? "White" : "Black", feval * 100.f);
     myprintf("\n");
 }
 
 float UCTSearch::get_root_temperature() {
+    if (cfg_root_temp_decay == 0) {
+        return 1.0f;
+    }
     auto adjusted_ply = 1.0f + (bh_.cur().game_ply()+1.0f) * cfg_root_temp_decay / 50.0f;
     auto root_temp = 1.0f / (1.0f + std::log(adjusted_ply));
     if (root_temp < 0.05f) {
@@ -179,14 +203,14 @@ Move UCTSearch::get_best_move() {
     // to the (exponentiated) visit counts.
 
     if (cfg_randomize) {
-        auto root_temperature = 1.0f;
-        // If a temperature decay schedule is set, calculate root temperature from
-        // ply count and decay constant. Set default value for too small root temperature.
+        auto root_temperature = get_root_temperature();
         if (cfg_root_temp_decay > 0) {
-            root_temperature = get_root_temperature();
             myprintf("Game ply: %d, root temperature: %5.2f \n",bh_.cur().game_ply()+1, root_temperature);
         }
-        m_root->randomize_first_proportionally(root_temperature);
+        m_root->randomize_first_proportionally(root_temperature, color);
+    }
+    if (m_tbpruned.size() > 0) {
+        m_root->ensure_first_not_pruned(m_tbpruned);
     }
 
     Move bestmove = m_root->get_first_child()->get_move();
@@ -197,17 +221,13 @@ Move UCTSearch::get_best_move() {
     }
 
     // should we consider resigning?
-    /*
-       float bestscore = m_root->get_first_child()->get_eval(color);
-       int visits = m_root->get_visits();
-    // bad score and visited enough
+    float bestscore = m_root->get_first_child()->get_eval(color);
+    // bad score
     if (bestscore < ((float)cfg_resignpct / 100.0f)
-        && visits > 500
-        && m_rootstate.game_ply() > cfg_min_resign_moves) { //--set cfg_min_resign_moves very high to forbid resigning...?
+        && bh_.cur().game_ply() > cfg_min_resign_moves) {
         myprintf("Score looks bad. Resigning.\n");
-        bestmove = MOVE_NONE; //--i guess MOVE_NONE will mean resign.
+        bestmove = MOVE_NONE; // MOVE_NONE means resign.
     }
-    */
 
     return bestmove;
 }
@@ -243,7 +263,7 @@ void UCTSearch::dump_analysis(int64_t elapsed, bool force_output) {
     m_root->sort_root_children(color);
 
     // same for nodes to depth, assume nodes = 1.8 ^ depth.
-    int depth = log(float(m_nodes)) / log(1.8);
+    int depth = m_nodes==0 ? 0 : log(float(m_nodes)) / log(1.8);
     // To report nodes, use visits.
     //   - Only includes expanded nodes.
     //   - Includes nodes carried over from tree reuse.
@@ -251,6 +271,7 @@ void UCTSearch::dump_analysis(int64_t elapsed, bool force_output) {
     // To report nps, use m_playouts to exclude nodes added by tree reuse,
     // which is similar to a ponder hit. The user will expect to know how
     // fast nodes are being added, not how big the ponder hit was.
+
     auto nps = 1000.0 * m_playouts / (elapsed + 1);
 
     int multipv_counter = 1;
@@ -266,11 +287,11 @@ void UCTSearch::dump_analysis(int64_t elapsed, bool force_output) {
 
         if(!pvstring_rest.empty()) pvstring.append(" ").append(pvstring_rest);
 
-        float feval = node->get_eval(color);
+        float feval = node->get_raw_eval(color);
         // UCI-like output wants a depth and a cp, so convert winrate to a cp estimate.
         int cp = 290.680623072 * tan(3.096181612 * (feval - 0.5));
-        myprintf_so("info depth %d nodes %d nps %0.f multipv %d score cp %d time %lld pv %s\n",
-                 depth, visits, nps, multipv_counter, cp, elapsed, pvstring.c_str());
+        myprintf_so("info depth %d nodes %d nps %0.f tbhits %d multipv %d score cp %d time %lld pv %s\n",
+                 depth, visits, nps, int(m_tbhits), multipv_counter, cp, elapsed, pvstring.c_str());
         if(++multipv_counter > cfg_uci_multipv) break;
     }
 }
@@ -282,11 +303,11 @@ bool UCTSearch::is_running() const {
 int UCTSearch::est_playouts_left() const {
     auto elapsed_millis = now() - m_start_time;
     auto playouts = m_playouts.load();
-    if (m_target_time < 0) {
+    if (!Limits.dynamic_controls_set() && !Limits.movetime) {
         // No time control, use playouts or visits.
         const auto playouts_left =
                 std::max(0, std::min(m_maxplayouts - playouts,
-                                     m_maxvisits - m_root->get_visits()));
+                                     m_maxnodes - m_root->get_visits()));
         return playouts_left;
     } else if (elapsed_millis < 1000 || playouts < 100) {
         // Until we reach 1 second or 100 playouts playout_rate
@@ -310,8 +331,8 @@ size_t UCTSearch::prune_noncontenders() {
     for (const auto& node : m_root->get_children()) {
         const auto has_enough_visits =
             node->get_visits() >= min_required_visits;
-        node->set_active(has_enough_visits);
-        if (!has_enough_visits) {
+        node->set_active(has_enough_visits && !m_tbpruned.count((int)node->get_move()));
+        if (!node->active()) {
             ++pruned_nodes;
         }
     }
@@ -353,13 +374,13 @@ bool UCTSearch::have_alternate_moves() {
 
 bool UCTSearch::pv_limit_reached() const {
     return m_playouts >= m_maxplayouts
-        || m_root->get_visits() >= m_maxvisits;
+        || m_root->get_visits() >= m_maxnodes;
 }
 
 void UCTWorker::operator()() {
     do {
         BoardHistory bh = bh_.shallow_clone();
-        auto result = m_search->play_simulation(bh, m_root);
+        auto result = m_search->play_simulation(bh, m_root, 0);
         if (result.valid()) {
             m_search->increment_playouts();
         }
@@ -385,7 +406,9 @@ Move UCTSearch::think(BoardHistory&& new_bh) {
     }
 
     m_playouts = 0;
+    m_maxdepth = 0;
     m_nodes = m_root->count_nodes();
+    m_tbhits = 0;
     // TODO: Both UCI and the next line do shallow_clone.
     // Could optimize this.
     bh_ = new_bh.shallow_clone();
@@ -401,9 +424,9 @@ Move UCTSearch::think(BoardHistory&& new_bh) {
     // set up timing info
 
     Time.init(bh_.cur().side_to_move(), bh_.cur().game_ply());
-    m_target_time = get_search_time();
-    m_max_time = Time.maximum();
-    m_start_time = Limits.timeStarted();
+    m_target_time = (Limits.movetime ? Limits.movetime : Time.optimum()) - cfg_lagbuffer_ms;
+    m_max_time    = Time.maximum() - cfg_lagbuffer_ms;
+    m_start_time  = Limits.timeStarted();
 
     // create a sorted list of legal moves (make sure we
     // play something legal and decent even in time trouble)
@@ -414,6 +437,21 @@ Move UCTSearch::think(BoardHistory&& new_bh) {
     }
     if (cfg_noise) {
         m_root->dirichlet_noise(0.25f, 0.3f);
+    }
+    // Track which nodes were pruned by table base to ensure they don't get
+    // unpruned later.
+    m_tbpruned.clear();
+    if (bh_.cur().count<ALL_PIECES>() <= Tablebases::MaxCardinality && !bh_.cur().can_castle(ANY_CASTLING)) {
+        // This copy should not be required, just being paranoid since root_probe mutates the pos argument.
+        Position cur_pos = bh_.cur();
+        if (Tablebases::root_probe(cur_pos, m_root->get_children()) || Tablebases::root_probe_wdl(cur_pos, m_root->get_children())) {
+            for (const auto& node : m_root->get_children()) {
+                m_tbhits++;
+                if (!node->active()) {
+                    m_tbpruned.insert((int)node->get_move());
+                }
+            }
+        }
     }
 
     m_run = true;
@@ -427,13 +465,12 @@ Move UCTSearch::think(BoardHistory&& new_bh) {
     int last_update = 0;
     do {
         auto currstate = bh_.shallow_clone();
-        auto result = play_simulation(currstate, m_root.get());
+        auto result = play_simulation(currstate, m_root.get(), 0);
         if (result.valid()) {
             increment_playouts();
         }
 
-        // assume nodes = 1.8 ^ depth.
-        int depth = log(float(m_nodes)) / log(1.8);
+        int depth = m_maxdepth;
         if (depth != last_update) {
             last_update = depth;
             dump_analysis(Time.elapsed(), false);
@@ -486,7 +523,7 @@ void UCTSearch::ponder() {
     }
     do {
         auto bh = bh_.shallow_clone();
-        auto result = play_simulation(bh, m_root.get());
+        auto result = play_simulation(bh, m_root.get(), 0);
         if (result.valid()) {
             increment_playouts();
         }
@@ -502,25 +539,16 @@ void UCTSearch::ponder() {
     myprintf("\n%d visits, %d expanded nodes\n\n", m_root->get_visits(), (int)m_nodes);
 }
 
-// Returns the amount of time to use for a turn in milliseconds
-int UCTSearch::get_search_time() {
-    if (Limits.use_time_management() && !Limits.dynamic_controls_set()){
-        return -1;
-    }
-
-    auto search_time = Limits.movetime ? Limits.movetime : Time.optimum();
-    // We must ensure search time is non-negative to use time management
-    search_time = std::max(1, search_time - cfg_lagbuffer_ms);
-    return search_time;
-}
-
 // Used to check if we've run out of time or reached out playout limit
 bool UCTSearch::should_halt_search() {
     if (uci_stop.load(std::memory_order_seq_cst)) return true;
     if (Limits.infinite) return false;
     auto elapsed_millis = now() - m_start_time;
-    return m_target_time < 0 ? pv_limit_reached()
-        : (m_target_time < elapsed_millis || elapsed_millis > m_max_time);
+    if (Limits.movetime)
+        return (elapsed_millis > m_target_time);
+    if (Limits.dynamic_controls_set())
+        return (elapsed_millis > m_target_time || elapsed_millis > m_max_time);
+    return pv_limit_reached();
 }
 
 // Asks the search to stop politely
@@ -538,15 +566,12 @@ void UCTSearch::set_playout_limit(int playouts) {
     }
 }
 
-void UCTSearch::set_visit_limit(int visits) {
-    static_assert(std::is_convertible<decltype(visits), decltype(m_maxvisits)>::value, "Inconsistent types for visits amount.");
-    if (visits == 0) {
+void UCTSearch::set_node_limit(int nodes) {
+    static_assert(std::is_convertible<decltype(nodes), decltype(m_maxnodes)>::value, "Inconsistent types for nodes amount.");
+    if (nodes == 0) {
         // Divide max by 2 to prevent overflow when multithreading.
-        m_maxvisits = MAXINT_DIV2;
+        m_maxnodes = MAXINT_DIV2;
     } else {
-        m_maxvisits = visits;
+        m_maxnodes = nodes;
     }
 }
-
-
-

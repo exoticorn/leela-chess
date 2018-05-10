@@ -18,11 +18,12 @@
 
 #pragma once
 
+#include "chess/position.h"
 #include "neural/network.h"
 
 namespace lczero {
 
-// Creates tensorflow based computing backend.
-std::unique_ptr<Network> MakeTensorflowNetwork(const Weights& weights);
+// Encodes the last position in history for the neural network request.
+InputPlanes EncodePositionForNN(const PositionHistory& history);
 
 }  // namespace lczero
