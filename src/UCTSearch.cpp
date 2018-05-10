@@ -267,7 +267,7 @@ void UCTSearch::dump_analysis(int64_t elapsed, bool force_output) {
     // To report nodes, use visits.
     //   - Only includes expanded nodes.
     //   - Includes nodes carried over from tree reuse.
-    auto visits = m_root->get_visits();
+
     // To report nps, use m_playouts to exclude nodes added by tree reuse,
     // which is similar to a ponder hit. The user will expect to know how
     // fast nodes are being added, not how big the ponder hit was.
@@ -275,7 +275,7 @@ void UCTSearch::dump_analysis(int64_t elapsed, bool force_output) {
     auto nps = 1000.0 * m_playouts / (elapsed + 1);
 
     int multipv_counter = 1;
-    for(const auto& node: m_root->get_children()){
+    for(const auto& node: m_root->get_children()) {
         auto node_move = node->get_move();
         auto pvstring = UCI::move(node_move);
 
@@ -287,11 +287,15 @@ void UCTSearch::dump_analysis(int64_t elapsed, bool force_output) {
 
         if(!pvstring_rest.empty()) pvstring.append(" ").append(pvstring_rest);
 
+        int visits = node->get_visits();
+        if(visits == 0) {
+          break;
+        }
         float feval = node->get_raw_eval(color);
         // UCI-like output wants a depth and a cp, so convert winrate to a cp estimate.
         int cp = 290.680623072 * tan(3.096181612 * (feval - 0.5));
-        myprintf_so("info depth %d nodes %d nps %0.f tbhits %d multipv %d score cp %d time %lld pv %s\n",
-                 depth, visits, nps, int(m_tbhits), multipv_counter, cp, elapsed, pvstring.c_str());
+        myprintf_so("info depth %d nodes %d nps %0.f tbhits %d multipv %d score cp %d mcts_visits %d mcts_win %d time %lld pv %s\n",
+                 depth, visits, nps, int(m_tbhits), multipv_counter, cp, visits, (int)(feval * 1000), elapsed, pvstring.c_str());
         if(++multipv_counter > cfg_uci_multipv) break;
     }
 }
@@ -463,6 +467,7 @@ Move UCTSearch::think(BoardHistory&& new_bh) {
 
     bool keeprunning = true;
     int last_update = 0;
+    int64_t last_update_time = 0;
     do {
         auto currstate = bh_.shallow_clone();
         auto result = play_simulation(currstate, m_root.get(), 0);
@@ -471,8 +476,9 @@ Move UCTSearch::think(BoardHistory&& new_bh) {
         }
 
         int depth = m_maxdepth;
-        if (depth != last_update) {
+        if (depth != last_update || Time.elapsed() > last_update_time + 1000) {
             last_update = depth;
+            last_update_time = Time.elapsed();
             dump_analysis(Time.elapsed(), false);
         }
 
