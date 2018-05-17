@@ -114,6 +114,10 @@ bool UCTNode::create_children(std::atomic<int>& nodecount, const BoardHistory& s
 
     link_nodelist(nodecount, raw_netlist.first, net_eval);
 
+    if (cfg_policy_compression > 0) {
+      compress_child_scores(cfg_policy_compression);
+    }
+
     return true;
 }
 
@@ -166,6 +170,21 @@ void UCTNode::dirichlet_noise(float epsilon, float alpha) {
         score = score * (1 - epsilon) + epsilon * eta_a;
         child->set_score(score);
     }
+}
+
+void UCTNode::compress_child_scores(float factor) {
+  auto total_score = 0.0f;
+  for (auto& child : m_children) {
+    total_score += child->get_score();
+  }
+
+  auto dist_score = total_score * factor / m_children.size();
+
+  for (auto& child : m_children) {
+    auto score = child->get_score();
+    score = score * (1 - factor) + dist_score;
+    child->set_score(score);
+  }
 }
 
 std::vector<float> UCTNode::calc_proportional(float tau, Color color) {
@@ -319,7 +338,7 @@ float UCTNode::get_raw_eval(int tomove) const {
         }
         return eval;
     }
-} 
+}
 
 double UCTNode::get_whiteevals() const {
     return m_whiteevals;

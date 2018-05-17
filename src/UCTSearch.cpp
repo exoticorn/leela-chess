@@ -558,6 +558,3 @@ void UCTSearch::set_node_limit(int nodes) {
         m_maxnodes = nodes;
     }
 }
-
-
-

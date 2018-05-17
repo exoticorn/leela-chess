@@ -62,6 +62,7 @@ public:
     void virtual_loss(void);
     void virtual_loss_undo(void);
     void dirichlet_noise(float epsilon, float alpha);
+    void compress_child_scores(float factor);
     std::vector<float> calc_proportional(float tau, Color color);
     void randomize_first_proportionally(float tau, Color color);
     void ensure_first_not_pruned(const std::unordered_set<int>& pruned_moves);

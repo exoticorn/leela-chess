@@ -68,8 +68,9 @@ float cfg_puct;
 float cfg_softmax_temp;
 float cfg_fpu_reduction;
 bool cfg_fpu_dynamic_eval;
+float cfg_policy_compression;
 std::string cfg_weightsfile;
-std::string cfg_syzygypath; 
+std::string cfg_syzygypath;
 bool cfg_syzygydraw;
 std::string cfg_logfile;
 std::string cfg_supervise;
@@ -96,6 +97,7 @@ void Parameters::setup_default_parameters() {
     cfg_softmax_temp = 1.0f;
     cfg_fpu_reduction = 0.1f;
     cfg_fpu_dynamic_eval = true;
+    cfg_policy_compression = 0;
     cfg_root_temp_decay = 0;
     //cfg_rand_visit_floor = 0.01f;
     cfg_rand_visit_floor = 0.0f;  // Disable for now
@@ -115,4 +117,3 @@ void Parameters::setup_default_parameters() {
     cfg_syzygydraw = true;
     cfg_go_nodes_as_playouts = false;
 }
-

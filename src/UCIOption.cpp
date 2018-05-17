@@ -60,7 +60,7 @@ namespace UCI {
 
         cfg_quiet = value;
     }
-  
+
     void on_syzygydraw(const Option& o) {
         bool value = o;
 
@@ -72,14 +72,14 @@ namespace UCI {
 
         cfg_syzygydraw = value;
     }
-  
+
     void on_syzygypath(const Option& o) {
         std::string value = o;
         cfg_syzygypath = value;
         myprintf("Syzygy Path set to string: %s\n", value.c_str());
         Tablebases::init(cfg_syzygypath);
     }
-  
+
     bool set_float_cfg(float& cfg_param, const std::string& value) {
         try {
             cfg_param = std::strtof(value.c_str(), nullptr);
@@ -145,6 +145,14 @@ namespace UCI {
         }
     }
 
+    void on_policy_compression(const Option& o) {
+      std::string value = o;
+
+      if (set_float_cfg(cfg_policy_compression, value)) {
+        myprintf("Set cfg_policy_compression to %f.\n", cfg_policy_compression);
+      }
+    }
+
 /// Our case insensitive less() function as required by UCI protocol
     bool CaseInsensitiveLess::operator() (const string& s1, const string& s2) const {
 
@@ -166,6 +174,7 @@ namespace UCI {
         o["Puct"]                   << Option(std::to_string(cfg_puct).c_str(), on_puct);
         o["SlowMover"]              << Option(cfg_slowmover, 1, std::numeric_limits<int>::max(), on_slowmover);
         o["GoNodesPlayouts"]        << Option(cfg_go_nodes_as_playouts, on_nodes_as_playouts);
+        o["PolicyCompression"]      << Option(std::to_string(cfg_policy_compression).c_str(), on_policy_compression);
     }
 
 /// operator<<() is used to print all the options default values in chronological
