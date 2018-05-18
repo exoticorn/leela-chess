@@ -294,8 +294,8 @@ void UCTSearch::dump_analysis(int64_t elapsed, bool force_output) {
         float feval = node->get_raw_eval(color);
         // UCI-like output wants a depth and a cp, so convert winrate to a cp estimate.
         int cp = 290.680623072 * tan(3.096181612 * (feval - 0.5));
-        myprintf_so("info depth %d nodes %d nps %0.f tbhits %d multipv %d score cp %d mcts_visits %d mcts_win %d time %lld pv %s\n",
-                 depth, visits, nps, int(m_tbhits), multipv_counter, cp, visits, (int)(feval * 1000), elapsed, pvstring.c_str());
+        myprintf_so("info depth %d nodes %d nps %0.f tbhits %d multipv %d score cp %d mcts_visits %d mcts_win %d mcts_prior %d time %lld pv %s\n",
+                 depth, visits, nps, int(m_tbhits), multipv_counter, cp, visits, int(feval * 1000), int(node->get_score() * 1000), elapsed, pvstring.c_str());
         if(++multipv_counter > cfg_uci_multipv) break;
     }
 }
