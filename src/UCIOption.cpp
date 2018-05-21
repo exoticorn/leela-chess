@@ -174,7 +174,7 @@ namespace UCI {
         o["Puct"]                   << Option(std::to_string(cfg_puct).c_str(), on_puct);
         o["SlowMover"]              << Option(cfg_slowmover, 1, std::numeric_limits<int>::max(), on_slowmover);
         o["GoNodesPlayouts"]        << Option(cfg_go_nodes_as_playouts, on_nodes_as_playouts);
-        o["PolicyCompression"]      << Option(std::to_string(cfg_policy_compression).c_str(), on_policy_compression);
+        o["Policy Compression"]      << Option(std::to_string(cfg_policy_compression).c_str(), on_policy_compression);
     }
 
 /// operator<<() is used to print all the options default values in chronological
