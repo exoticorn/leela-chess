@@ -354,10 +354,7 @@ UCTNode* UCTNode::uct_select_child(Color color, bool is_root) {
         }
     }
 
-    auto pc_tmp = parentvisits * cfg_policy_compression;
-    pc_tmp = pc_tmp * pc_tmp;
-    auto pc = pc_tmp / (pc_tmp + 1);
-    auto pc_avg = pc / m_children.size();
+    auto exploration_boost = parentvisits * cfg_policy_compression / 100;
 
     auto numerator = std::sqrt((double)parentvisits);
     auto fpu_reduction = 0.0f;
@@ -381,9 +378,9 @@ UCTNode* UCTNode::uct_select_child(Color color, bool is_root) {
         if (child->get_visits() > 0) {
             winrate = child->get_eval(color);
         }
-        auto psa = child->get_score() * (1 - pc) + pc_avg;
+        auto psa = child->get_score();
         auto denom = 1.0f + child->get_visits();
-        auto puct = cfg_puct * psa * (numerator / denom);
+        auto puct = cfg_puct * ((psa * numerator + exploration_boost) / denom);
         auto value = winrate + puct;
         assert(value > std::numeric_limits<double>::lowest());
 
